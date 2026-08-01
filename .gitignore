@@ -1,0 +1,39 @@
+# Ignore temporary files and editor/runtime artifacts
+.DS_Store
+*.swp
+*.swo
+*.tmp
+*~
+
+# Ignore Python caches if any
+__pycache__/
+*.py[cod]
+
+# Ignore local environment files
+*.env
+*.local
+
+# Ignore OS generated files
+Thumbs.db
+
+# Ignore kubernetes/helm artifacts and local cluster state
+*.kube/
+*.kubeconfig
+*.kubeconfig.*
+
+# Ignore generated evidence files that may be recorded during labs/tests
+evidence/**/*.txt
+
+# Ignore binary or package output
+*.log
+*.cache
+
+# Ignore vscode workspace settings
+.vscode/
+
+# Ignore container runtime files
+docker-compose.override.yml
+
+# Ignore kubectl or kind temp files
+*.yaml.tmp
+*.yaml.bak
