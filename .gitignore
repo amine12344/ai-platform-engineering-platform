@@ -12,6 +12,7 @@ __pycache__/
 # Ignore local environment files
 *.env
 *.local
+.venv/
 
 # Ignore OS generated files
 Thumbs.db

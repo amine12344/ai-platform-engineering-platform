@@ -8,10 +8,13 @@ This repository contains a platform engineering reference setup for local Kubern
   - `versions.env` - version definitions for platform components
   - `foundation/` - platform bootstrap manifests and values
   - `kind/` - kind cluster profiles and local cluster configuration
+  - `data/` - platform data-layer manifests, including PostgreSQL manifests
 - `starter-project/`
   - `platform-health/` - simple health probe app used for platform validation
     - `Dockerfile`
     - `www/` - static health endpoints (`healthz`, `readyz`, `index.html`)
+- `doc/` - lab and deployment documentation
+- `docs/` - previous lab documentation
 - `evidence/` - captured lab outputs and platform validation evidence
 
 ## Getting Started
