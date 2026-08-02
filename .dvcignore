@@ -1,0 +1,10 @@
+# Add patterns of files dvc should ignore, which could improve
+# the performance. Learn more at
+# https://dvc.org/doc/user-guide/dvcignore
+
+# Ignore local lab artifacts and generated dataset outputs
+.local/
+.dvc/cache/
+.dvc/tmp/
+.dvc/config.local
+datasets/releases/sample/tickets.csv

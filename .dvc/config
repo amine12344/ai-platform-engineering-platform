@@ -1,0 +1,6 @@
+[core]
+    remote = supportops-s3
+['remote "supportops-s3"']
+    url = s3://supportops-dvc/dvc
+    endpointurl = http://s3.supportops.local
+    use_ssl = false

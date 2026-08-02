@@ -12,6 +12,7 @@ __pycache__/
 # Ignore local environment files
 *.env
 *.local
+.venv/
 
 # Ignore OS generated files
 Thumbs.db
@@ -37,3 +38,9 @@ docker-compose.override.yml
 # Ignore kubectl or kind temp files
 *.yaml.tmp
 *.yaml.bak
+
+# Ignore local lab and generated data artifacts
+.local/
+*.local
+datasets/releases/sample/tickets.csv
+*.tmp

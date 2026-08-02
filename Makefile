@@ -179,7 +179,7 @@ database: data dataset
 	@kubectl --context $(CONTEXT) \
 		-n supportops-data \
 		exec -i postgresql-0 -- \
-		psql -U supportops -d supportops <<'SQL'
+		psql -v ON_ERROR_STOP=1 -U supportops -d supportops <<'SQL'
 	CREATE SCHEMA IF NOT EXISTS helpdesk;
 	CREATE TABLE IF NOT EXISTS helpdesk.tickets (
 	  ticket_id text PRIMARY KEY,
@@ -198,7 +198,12 @@ database: data dataset
 	  satisfaction_score integer NOT NULL CHECK (satisfaction_score BETWEEN 1 AND 5)
 	);
 	TRUNCATE helpdesk.tickets;
-	\copy helpdesk.tickets FROM '/tmp/tickets.csv' WITH (FORMAT csv, HEADER true);
+	COPY helpdesk.tickets
+	FROM '/tmp/tickets.csv'
+	WITH (
+	  FORMAT csv,
+	  HEADER true
+	);
 	SQL
 	@kubectl --context $(CONTEXT) \
 		-n supportops-data \
