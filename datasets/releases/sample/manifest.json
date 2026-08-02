@@ -1,0 +1,9 @@
+{
+  "name": "supportops-tickets-sample",
+  "version": "2026.07.13",
+  "rows": 250,
+  "fields": 14,
+  "seed": 20260713,
+  "sha256": "dca23011fa1774671d3ddf94af65151e767ef3b8a08437f8913bcd064eae6543",
+  "generator": "datasets/generate_supportops.py"
+}
