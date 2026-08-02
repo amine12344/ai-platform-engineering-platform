@@ -11,15 +11,21 @@ REGISTRY_PORT := 5001
 REGISTRY_VOLUME := supportops-registry-data
 PROFILE ?= 16gb
 PROFILE_FILE := platform/kind/profiles/$(PROFILE).yaml
+DVC_SITE_CACHE_DIR := $(CURDIR)/.local/dvc-site-cache
+export DVC_SITE_CACHE_DIR
 
 .PHONY: help doctor registry cluster images ingress namespaces health baseline \
-	data dataset database dvc lab0-up lab1-up up restore status down clean reset
+	data dataset database dvc mlflow-image mlflow lab0-up lab1-up lab2-up up \
+	verify verify-lab0 verify-lab1 verify-lab2 restore status down clean reset
 
 help:
 	@printf '%s\n' \
 		'make lab0-up    Create Lab-00' \
 		'make lab1-up    Create Lab-00 and Lab-01' \
+		'make lab2-up    Create Lab-00, Lab-01, and MLflow' \
+		'make mlflow     Build and deploy MLflow' \
 		'make up         Create complete environment' \
+		'make verify     Verify every platform layer' \
 		'make restore    Reapply manifests' \
 		'make status     Show environment status' \
 		'make down       Delete Kind cluster only' \
@@ -212,7 +218,7 @@ database: data dataset
 		-c 'SELECT COUNT(*) FROM helpdesk.tickets;'
 
 dvc: database
-	@echo '[dvc] Creating Python environment'
+	@echo '[dvc] Creating Python environment and S3 remote'
 	@test -x .venv/bin/python || python3 -m venv .venv
 	@.venv/bin/python -m pip install \
 		--quiet 'dvc[s3]==$(DVC_VERSION)'
@@ -221,6 +227,57 @@ dvc: database
 		--force -d supportops-s3 s3://supportops-dvc/dvc
 	@.venv/bin/dvc remote modify \
 		supportops-s3 endpointurl http://s3.supportops.local
+	@.venv/bin/dvc remote modify \
+		supportops-s3 use_ssl false
+	@.venv/bin/dvc remote modify --local \
+		supportops-s3 access_key_id \
+		"$$(cat .local/lab-01/s3-access-key)"
+	@.venv/bin/dvc remote modify --local \
+		supportops-s3 secret_access_key \
+		"$$(cat .local/lab-01/s3-secret-key)"
+	@.venv/bin/python -c 'import boto3, pathlib; p=pathlib.Path(".local/lab-01"); s3=boto3.client("s3", endpoint_url="http://s3.supportops.local", aws_access_key_id=(p/"s3-access-key").read_text().strip(), aws_secret_access_key=(p/"s3-secret-key").read_text().strip()); names={item["Name"] for item in s3.list_buckets().get("Buckets", [])}; "supportops-dvc" not in names and s3.create_bucket(Bucket="supportops-dvc")'
+	@.venv/bin/dvc add \
+		datasets/releases/sample/tickets.csv
+	@echo '[dvc] Pushing dataset artifacts'
+	@.venv/bin/dvc push \
+		datasets/releases/sample/tickets.csv.dvc
+
+mlflow-image: cluster
+	@echo '[mlflow] Building MLflow image'
+	@docker build \
+		--build-arg MLFLOW_BASE_IMAGE=$(MLFLOW_BASE_IMAGE) \
+		--tag $(MLFLOW_IMAGE) \
+		starter-project/mlflow
+	@docker push $(MLFLOW_IMAGE)
+
+mlflow: data mlflow-image
+	@echo '[mlflow] Creating credentials'
+	@kubectl --context $(CONTEXT) \
+		-n supportops-ml \
+		create secret generic mlflow-credentials \
+		--from-literal=backend-store-uri="postgresql://supportops:$$(cat .local/lab-01/postgres-password)@postgresql.supportops-data.svc.cluster.local:5432/supportops" \
+		--from-literal=aws-access-key-id="$$(cat .local/lab-01/s3-access-key)" \
+		--from-literal=aws-secret-access-key="$$(cat .local/lab-01/s3-secret-key)" \
+		--dry-run=client -o yaml \
+		| kubectl --context $(CONTEXT) apply -f -
+	@echo '[mlflow] Deploying MLflow'
+	@kubectl --context $(CONTEXT) apply \
+		-f platform/mlflow/mlflow.yaml
+	@kubectl --context $(CONTEXT) \
+		-n supportops-ml \
+		set image deployment/mlflow \
+		mlflow=$(MLFLOW_IMAGE)
+	@kubectl --context $(CONTEXT) \
+		-n supportops-ml \
+		rollout restart deployment/mlflow
+	@kubectl --context $(CONTEXT) \
+		-n supportops-ml \
+		rollout status deployment/mlflow \
+		--timeout=240s
+	@echo '[mlflow] Ensuring artifact bucket exists'
+	@kubectl --context $(CONTEXT) \
+		-n supportops-ml \
+		exec deployment/mlflow -- python -c 'import boto3; s3=boto3.client("s3", endpoint_url="http://seaweedfs.supportops-data.svc.cluster.local:8333"); names={item["Name"] for item in s3.list_buckets().get("Buckets", [])}; "supportops-models" not in names and s3.create_bucket(Bucket="supportops-models")'
 
 lab0-up: baseline
 	@echo '[lab0] Lab-00 is ready'
@@ -228,10 +285,54 @@ lab0-up: baseline
 lab1-up: dvc
 	@echo '[lab1] Lab-01 is ready'
 
-up: lab1-up
+lab2-up: dvc mlflow
+	@echo '[lab2] MLflow is ready at http://mlflow.supportops.local'
+
+up: lab2-up verify
 	@echo '[up] Complete environment is ready'
 
-restore: baseline data
+verify-lab0:
+	@echo '[verify] Lab-00 foundation and ingress'
+	@kubectl --context $(CONTEXT) \
+		-n ingress-nginx \
+		rollout status deployment/ingress-nginx-controller \
+		--timeout=180s
+	@kubectl --context $(CONTEXT) \
+		-n supportops-platform \
+		rollout status deployment/platform-health \
+		--timeout=180s
+	@test "$$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --resolve platform.supportops.local:80:127.0.0.1 http://platform.supportops.local/healthz)" = 200
+
+verify-lab1:
+	@echo '[verify] Lab-01 database, object storage, and DVC'
+	@kubectl --context $(CONTEXT) \
+		-n supportops-data \
+		rollout status statefulset/postgresql \
+		--timeout=240s
+	@kubectl --context $(CONTEXT) \
+		-n supportops-data \
+		rollout status statefulset/seaweedfs \
+		--timeout=240s
+	@test "$$(kubectl --context $(CONTEXT) -n supportops-data exec postgresql-0 -- psql -U supportops -d supportops -Atc 'SELECT COUNT(*) FROM helpdesk.tickets;')" = 250
+	@.venv/bin/python -c 'import boto3, pathlib; p=pathlib.Path(".local/lab-01"); s3=boto3.client("s3", endpoint_url="http://s3.supportops.local", aws_access_key_id=(p/"s3-access-key").read_text().strip(), aws_secret_access_key=(p/"s3-secret-key").read_text().strip()); names={item["Name"] for item in s3.list_buckets().get("Buckets", [])}; assert "supportops-dvc" in names, "missing bucket: supportops-dvc"'
+	@.venv/bin/dvc status --quiet --cloud \
+		datasets/releases/sample/tickets.csv.dvc
+
+verify-lab2:
+	@echo '[verify] Lab-02 MLflow lifecycle service'
+	@kubectl --context $(CONTEXT) \
+		-n supportops-ml \
+		rollout status deployment/mlflow \
+		--timeout=240s
+	@test "$$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --resolve mlflow.supportops.local:80:127.0.0.1 http://mlflow.supportops.local/health)" = 200
+	@kubectl --context $(CONTEXT) \
+		-n supportops-ml \
+		exec deployment/mlflow -- python -c 'import boto3; s3=boto3.client("s3", endpoint_url="http://seaweedfs.supportops-data.svc.cluster.local:8333"); s3.head_bucket(Bucket="supportops-models")'
+
+verify: verify-lab0 verify-lab1 verify-lab2
+	@echo '[verify] All platform checks passed'
+
+restore: baseline data mlflow
 	@echo '[restore] Environment restored'
 
 status:
@@ -243,6 +344,9 @@ status:
 	@kubectl --context $(CONTEXT) \
 		-n supportops-data \
 		get pods,pvc,service,ingress -o wide
+	@kubectl --context $(CONTEXT) \
+		-n supportops-ml \
+		get pods,service,ingress -o wide
 	@docker ps
 	@docker network ls
 
