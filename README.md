@@ -1,109 +1,79 @@
-# AI Platform Engineering Platform
+# SupportOps AI Platform
 
-This repository contains a platform engineering reference setup for local Kubernetes development and platform health checks.
+This repository installs a complete local AI platform on a Kind Kubernetes
+cluster. The platform includes ingress, health checks, PostgreSQL, SeaweedFS,
+DVC dataset management, MLflow, and the SupportOps API.
 
-## Repository Layout
+## Prerequisites
 
-- `platform/`
-  - `versions.env` - version definitions for platform components
-  - `foundation/` - platform bootstrap manifests and values
-  - `kind/` - kind cluster profiles and local cluster configuration
-  - `data/` - platform data-layer manifests, including PostgreSQL manifests
-- `starter-project/`
-  - `platform-health/` - simple health probe app used for platform validation
-    - `Dockerfile`
-    - `www/` - static health endpoints (`healthz`, `readyz`, `index.html`)
-- `doc/` - lab and deployment documentation
-- `docs/` - previous lab documentation
-- `evidence/` - captured lab outputs and platform validation evidence
+Install Docker, Kind, kubectl, Helm, Python 3, and curl. On Windows, configure
+the local ingress names from an elevated PowerShell terminal:
 
-## Getting Started
-
-1. Install Docker, Kind, kubectl, Helm, Python 3, and curl.
-2. On Windows, run PowerShell as Administrator and execute:
-
-   ```powershell
-   powershell.exe -ExecutionPolicy Bypass -File .\scripts\configure-windows-hosts.ps1
-   ```
-
-3. Build the complete platform from the repository root:
-
-   ```bash
-   make doctor
-   make up
-   ```
-
-4. Confirm every platform layer independently:
-
-   ```bash
-   make verify
-   make status
-   ```
-
-5. Open the local services:
-
-   - Platform health: <http://platform.supportops.local>
-   - S3 API: <http://s3.supportops.local>
-   - MLflow: <http://mlflow.supportops.local>
-
-To prove clean rebuild reproducibility, run `make reset`. This removes the Kind
-cluster and local registry resources, rebuilds the platform, and runs the full
-verification gate through the `up` target.
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\configure-windows-hosts.ps1
+```
 
 ## Platform lifecycle
 
-```mermaid
-flowchart TD
-    A[Fresh clone or make clean] --> B[make doctor]
-    B --> C[Local registry]
-    C --> D[Kind cluster]
-    D --> E[Namespaces and ingress-nginx]
-    E --> F[Platform health deployment]
-    F --> G[Generate local credentials]
-    G --> H[PostgreSQL and SeaweedFS]
-    H --> I[Generate and validate 250-row dataset]
-    I --> J[Load helpdesk.tickets into PostgreSQL]
-    J --> K[Configure DVC credentials and S3 remote]
-    K --> L[Create supportops-dvc bucket and push dataset]
-    H --> M[Build and push custom MLflow image]
-    L --> N[Create MLflow secret and deploy MLflow]
-    M --> N
-    N --> O[Create supportops-models artifact bucket]
-    O --> P[make verify]
-    P --> Q{All checks pass?}
-    Q -- No --> R[Stop with failing layer and non-zero exit]
-    Q -- Yes --> S[Platform up and running]
-    S --> T[platform.supportops.local]
-    S --> U[s3.supportops.local]
-    S --> V[mlflow.supportops.local]
+Run these commands from the repository root:
+
+```bash
+make doctor
+make install
+make status
 ```
 
-The running data flow is:
+`make install` is the main entry point. It creates the registry and Kind
+cluster, installs every component, loads the dataset, provisions the DVC and
+MLflow buckets, and runs all verification checks.
 
-```mermaid
-flowchart LR
-    Browser -->|HTTP host routing| Ingress[ingress-nginx]
-    Ingress --> Health[Platform health]
-    Ingress --> MLflow[MLflow UI and API]
-    Ingress --> S3[SeaweedFS S3 API]
-    MLflow -->|metadata| PostgreSQL
-    MLflow -->|model artifacts| S3
-    DVC -->|dataset artifacts| S3
+Use the lifecycle targets as follows:
+
+| Target | Purpose |
+| --- | --- |
+| `make install` | Install and verify the complete platform |
+| `make verify` | Verify all running components and data |
+| `make status` | Display cluster, workload, service, and ingress state |
+| `make restore` | Rebuild images, reapply components, and verify them |
+| `make clean` | Remove the Kind cluster, registry container, registry volume, and Kind network |
+| `make reset` | Clean and reinstall the complete platform |
+
+Component targets are available for focused work:
+
+```bash
+make foundation
+make data
+make dvc
+make mlflow
+make api
+make validate
+make test
 ```
 
-## Progress update
+Generated credentials are stored in `.local/platform` and are excluded from
+Git. `make clean` preserves these local credentials and the Python virtual
+environment; it removes the platform runtime and its Kubernetes storage.
 
-The current branch now includes the following lab progress:
+## Services
 
-- A PostgreSQL data-layer deployment manifest under `platform/data/postgresql.yaml`.
-- A SeaweedFS data-layer deployment manifest under `platform/data/seaweedfs.yaml`.
-- A reproducible dataset workflow via the `Makefile` targets `dataset`, `database`, and `dvc`.
-- A generated SupportOps sample dataset and validation workflow under `datasets/`.
-- Verified PostgreSQL import and row-count checks for the loaded ticket data.
-- An MLflow deployment under `platform/mlflow/mlflow.yaml` for model lifecycle management.
-- Local ingress access for MLflow via `http://mlflow.supportops.local`.
+After installation, the following endpoints are available:
 
-## Notes
+- Platform health: <http://platform.supportops.local/healthz>
+- SeaweedFS S3 API: <http://s3.supportops.local>
+- MLflow: <http://mlflow.supportops.local>
+- SupportOps API: <http://api.supportops.local/healthz>
+- SupportOps API documentation: <http://api.supportops.local/docs>
 
-- Keep local environment files out of source control by using `.gitignore`.
-- Use the `evidence/` folder to store output from verification commands and lab checks.
+## Components
+
+- `platform/foundation/`: namespaces, ingress configuration, and platform health
+- `platform/data/`: PostgreSQL, SeaweedFS, and dataset-loading SQL
+- `platform/mlflow/`: MLflow tracking and model artifact service
+- `platform/apps/`: application service Kubernetes manifests
+- `database/migrations/`: versioned PostgreSQL schema migrations
+- `services/supportops-api/`: FastAPI application, image, and tests
+- `datasets/`: deterministic SupportOps dataset generation and validation
+- `starter-project/`: custom platform-health and MLflow images
+
+See [Platform operations](docs/operations.md) for target dependencies,
+verification behavior, recovery, and cleanup details.

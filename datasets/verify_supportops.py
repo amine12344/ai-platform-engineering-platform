@@ -10,14 +10,24 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from generate_supportops import (
-    CATEGORY_PRODUCTS,
-    CHANNELS,
-    CUSTOMER_TIERS,
-    FIELDS,
-    LANGUAGES,
-    PRIORITIES,
-)
+try:
+    from .generate_supportops import (
+        CATEGORY_PRODUCTS,
+        CHANNELS,
+        CUSTOMER_TIERS,
+        FIELDS,
+        LANGUAGES,
+        PRIORITIES,
+    )
+except ImportError:  # Support direct execution as a script.
+    from generate_supportops import (
+        CATEGORY_PRODUCTS,
+        CHANNELS,
+        CUSTOMER_TIERS,
+        FIELDS,
+        LANGUAGES,
+        PRIORITIES,
+    )
 
 
 def validate_dataset(

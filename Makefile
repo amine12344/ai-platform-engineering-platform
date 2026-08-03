@@ -12,25 +12,38 @@ REGISTRY_VOLUME := supportops-registry-data
 PROFILE ?= 16gb
 PROFILE_FILE := platform/kind/profiles/$(PROFILE).yaml
 DVC_SITE_CACHE_DIR := $(CURDIR)/.local/dvc-site-cache
+CREDENTIAL_DIR := .local/platform
 export DVC_SITE_CACHE_DIR
 
-.PHONY: help doctor registry cluster images ingress namespaces health baseline \
-	data dataset database dvc mlflow-image mlflow lab0-up lab1-up lab2-up up \
-	verify verify-lab0 verify-lab1 verify-lab2 restore status down clean reset
+.PHONY: help doctor registry cluster images ingress namespaces \
+	platform-health-image foundation data dataset migrate database dvc \
+	mlflow-image mlflow api-image api install up \
+	verify verify-foundation verify-data verify-mlflow verify-api \
+	validate test test-foundation test-api lint-api \
+	demo-foundation demo-api-local demo-api-kubernetes \
+	restore status down clean uninstall reset
 
 help:
 	@printf '%s\n' \
-		'make lab0-up    Create Lab-00' \
-		'make lab1-up    Create Lab-00 and Lab-01' \
-		'make lab2-up    Create Lab-00, Lab-01, and MLflow' \
+		'make install    Install and verify the complete platform' \
+		'make verify     Verify every installed component' \
+		'make status     Show platform resources' \
+		'make restore    Rebuild and reapply every component' \
+		'make clean      Remove the cluster and local registry' \
+		'make reset      Clean, reinstall, and verify the platform' \
+		'' \
+		'Component targets:' \
+		'make foundation Install ingress and platform health' \
+		'make data       Install PostgreSQL and SeaweedFS' \
+		'make dvc        Generate, load, and publish the dataset' \
 		'make mlflow     Build and deploy MLflow' \
-		'make up         Create complete environment' \
-		'make verify     Verify every platform layer' \
-		'make restore    Reapply manifests' \
-		'make status     Show environment status' \
-		'make down       Delete Kind cluster only' \
-		'make clean      Delete cluster, registry, volume, and network' \
-		'make reset      Clean and rebuild everything'
+		'make api        Build and deploy the SupportOps API' \
+		'' \
+		'Development targets:' \
+		'make validate   Validate the repository contract' \
+		'make test       Run foundation and API tests plus API linting' \
+		'make demo-foundation       Demonstrate the local foundation' \
+		'make demo-api-kubernetes   Exercise the deployed API'
 
 doctor:
 	@echo '[doctor] Checking commands'
@@ -101,12 +114,12 @@ ingress: images
 		--wait \
 		--timeout 5m
 
-namespaces:
+namespaces: cluster
 	@echo '[namespaces] Creating namespaces'
 	@kubectl --context $(CONTEXT) apply \
 		-f platform/foundation/namespaces.yaml
 
-health: cluster
+platform-health-image: cluster
 	@echo '[health] Building platform-health image'
 	@docker build \
 		--build-arg BASE_IMAGE=$(PLATFORM_HEALTH_BASE_IMAGE) \
@@ -114,8 +127,8 @@ health: cluster
 		starter-project/platform-health
 	@docker push $(PLATFORM_HEALTH_IMAGE)
 
-baseline: namespaces health ingress
-	@echo '[baseline] Deploying platform health'
+foundation: namespaces platform-health-image ingress
+	@echo '[foundation] Deploying platform health'
 	@kubectl --context $(CONTEXT) apply \
 		-f platform/foundation/platform-health.yaml
 	@kubectl --context $(CONTEXT) \
@@ -123,39 +136,39 @@ baseline: namespaces health ingress
 		rollout status deployment/platform-health \
 		--timeout=180s
 
-data: baseline
+data: foundation
 	@echo '[data] Creating local credential directory'
-	@mkdir -p .local/lab-01
+	@mkdir -p $(CREDENTIAL_DIR)
 	@umask 077; \
-	if [ ! -s .local/lab-01/postgres-password ]; then \
+	if [ ! -s $(CREDENTIAL_DIR)/postgres-password ]; then \
 		python3 -c 'import secrets; print(secrets.token_urlsafe(32))' \
-			> .local/lab-01/postgres-password; \
+			> $(CREDENTIAL_DIR)/postgres-password; \
 	fi
 	@umask 077; \
-	if [ ! -s .local/lab-01/s3-access-key ]; then \
+	if [ ! -s $(CREDENTIAL_DIR)/s3-access-key ]; then \
 		printf 'supportops-%s\n' \
 			"$$(python3 -c 'import secrets; print(secrets.token_hex(8))')" \
-			> .local/lab-01/s3-access-key; \
+			> $(CREDENTIAL_DIR)/s3-access-key; \
 	fi
 	@umask 077; \
-	if [ ! -s .local/lab-01/s3-secret-key ]; then \
+	if [ ! -s $(CREDENTIAL_DIR)/s3-secret-key ]; then \
 		python3 -c 'import secrets; print(secrets.token_urlsafe(32))' \
-			> .local/lab-01/s3-secret-key; \
+			> $(CREDENTIAL_DIR)/s3-secret-key; \
 	fi
 	@python3 -c '\
 import json, pathlib; \
-p = pathlib.Path(".local/lab-01"); \
+p = pathlib.Path("$(CREDENTIAL_DIR)"); \
 json.dump({"identities":[{"name":"supportops-dvc","credentials":[{"accessKey":(p/"s3-access-key").read_text().strip(),"secretKey":(p/"s3-secret-key").read_text().strip()}],"actions":["Read","Write","List","Tagging","Admin"]}]}, (p/"s3.json").open("w"))'
 	@kubectl --context $(CONTEXT) \
 		-n supportops-data \
 		create secret generic postgresql-credentials \
-		--from-literal=password="$$(cat .local/lab-01/postgres-password)" \
+		--from-literal=password="$$(cat $(CREDENTIAL_DIR)/postgres-password)" \
 		--dry-run=client -o yaml \
 		| kubectl --context $(CONTEXT) apply -f -
 	@kubectl --context $(CONTEXT) \
 		-n supportops-data \
 		create secret generic seaweedfs-s3-credentials \
-		--from-file=s3.json=.local/lab-01/s3.json \
+		--from-file=s3.json=$(CREDENTIAL_DIR)/s3.json \
 		--dry-run=client -o yaml \
 		| kubectl --context $(CONTEXT) apply -f -
 	@kubectl --context $(CONTEXT) apply \
@@ -176,46 +189,19 @@ dataset:
 	@python3 datasets/verify_supportops.py \
 		datasets/releases/sample/tickets.csv
 
-database: data dataset
-	@echo '[database] Copying CSV into PostgreSQL'
+migrate: data
+	@echo '[database] Applying versioned migrations'
+	@KUBE_CONTEXT=$(CONTEXT) \
+		bash scripts/migrate_database.sh kubernetes
+
+database: migrate
+	@echo '[database] Generating and importing versioned dataset'
+	@KUBE_CONTEXT=$(CONTEXT) \
+		bash scripts/import_dataset.sh kubernetes
 	@kubectl --context $(CONTEXT) \
-		-n supportops-data \
-		cp datasets/releases/sample/tickets.csv \
-		postgresql-0:/tmp/tickets.csv
-	@kubectl --context $(CONTEXT) \
-		-n supportops-data \
-		exec -i postgresql-0 -- \
-		psql -v ON_ERROR_STOP=1 -U supportops -d supportops <<'SQL'
-	CREATE SCHEMA IF NOT EXISTS helpdesk;
-	CREATE TABLE IF NOT EXISTS helpdesk.tickets (
-	  ticket_id text PRIMARY KEY,
-	  created_at timestamptz NOT NULL,
-	  channel text NOT NULL,
-	  language text NOT NULL,
-	  customer_tier text NOT NULL,
-	  product text NOT NULL,
-	  subject text NOT NULL,
-	  body text NOT NULL,
-	  category text NOT NULL,
-	  priority text NOT NULL CHECK (priority IN ('P1','P2','P3','P4')),
-	  escalated boolean NOT NULL,
-	  resolution_time_minutes integer NOT NULL CHECK (resolution_time_minutes > 0),
-	  agent_response text NOT NULL,
-	  satisfaction_score integer NOT NULL CHECK (satisfaction_score BETWEEN 1 AND 5)
-	);
-	TRUNCATE helpdesk.tickets;
-	COPY helpdesk.tickets
-	FROM '/tmp/tickets.csv'
-	WITH (
-	  FORMAT csv,
-	  HEADER true
-	);
-	SQL
-	@kubectl --context $(CONTEXT) \
-		-n supportops-data \
-		exec postgresql-0 -- \
+		-n supportops-data exec postgresql-0 -- \
 		psql -U supportops -d supportops \
-		-c 'SELECT COUNT(*) FROM helpdesk.tickets;'
+		-c 'SELECT release_name, row_count, sha256 FROM helpdesk.dataset_releases;'
 
 dvc: database
 	@echo '[dvc] Creating Python environment and S3 remote'
@@ -231,11 +217,11 @@ dvc: database
 		supportops-s3 use_ssl false
 	@.venv/bin/dvc remote modify --local \
 		supportops-s3 access_key_id \
-		"$$(cat .local/lab-01/s3-access-key)"
+		"$$(cat $(CREDENTIAL_DIR)/s3-access-key)"
 	@.venv/bin/dvc remote modify --local \
 		supportops-s3 secret_access_key \
-		"$$(cat .local/lab-01/s3-secret-key)"
-	@.venv/bin/python -c 'import boto3, pathlib; p=pathlib.Path(".local/lab-01"); s3=boto3.client("s3", endpoint_url="http://s3.supportops.local", aws_access_key_id=(p/"s3-access-key").read_text().strip(), aws_secret_access_key=(p/"s3-secret-key").read_text().strip()); names={item["Name"] for item in s3.list_buckets().get("Buckets", [])}; "supportops-dvc" not in names and s3.create_bucket(Bucket="supportops-dvc")'
+		"$$(cat $(CREDENTIAL_DIR)/s3-secret-key)"
+	@.venv/bin/python -c 'import boto3, pathlib; p=pathlib.Path("$(CREDENTIAL_DIR)"); s3=boto3.client("s3", endpoint_url="http://s3.supportops.local", aws_access_key_id=(p/"s3-access-key").read_text().strip(), aws_secret_access_key=(p/"s3-secret-key").read_text().strip()); names={item["Name"] for item in s3.list_buckets().get("Buckets", [])}; "supportops-dvc" not in names and s3.create_bucket(Bucket="supportops-dvc")'
 	@.venv/bin/dvc add \
 		datasets/releases/sample/tickets.csv
 	@echo '[dvc] Pushing dataset artifacts'
@@ -255,9 +241,9 @@ mlflow: data mlflow-image
 	@kubectl --context $(CONTEXT) \
 		-n supportops-ml \
 		create secret generic mlflow-credentials \
-		--from-literal=backend-store-uri="postgresql://supportops:$$(cat .local/lab-01/postgres-password)@postgresql.supportops-data.svc.cluster.local:5432/supportops" \
-		--from-literal=aws-access-key-id="$$(cat .local/lab-01/s3-access-key)" \
-		--from-literal=aws-secret-access-key="$$(cat .local/lab-01/s3-secret-key)" \
+		--from-literal=backend-store-uri="postgresql://supportops:$$(cat $(CREDENTIAL_DIR)/postgres-password)@postgresql.supportops-data.svc.cluster.local:5432/supportops" \
+		--from-literal=aws-access-key-id="$$(cat $(CREDENTIAL_DIR)/s3-access-key)" \
+		--from-literal=aws-secret-access-key="$$(cat $(CREDENTIAL_DIR)/s3-secret-key)" \
 		--dry-run=client -o yaml \
 		| kubectl --context $(CONTEXT) apply -f -
 	@echo '[mlflow] Deploying MLflow'
@@ -279,20 +265,45 @@ mlflow: data mlflow-image
 		-n supportops-ml \
 		exec deployment/mlflow -- python -c 'import boto3; s3=boto3.client("s3", endpoint_url="http://seaweedfs.supportops-data.svc.cluster.local:8333"); names={item["Name"] for item in s3.list_buckets().get("Buckets", [])}; "supportops-models" not in names and s3.create_bucket(Bucket="supportops-models")'
 
-lab0-up: baseline
-	@echo '[lab0] Lab-00 is ready'
+api-image: cluster
+	@echo '[api] Building SupportOps API image'
+	@docker build \
+		--build-arg PYTHON_IMAGE=$(PYTHON_IMAGE) \
+		--tag $(SUPPORTOPS_API_IMAGE) \
+		services/supportops-api
+	@docker push $(SUPPORTOPS_API_IMAGE)
 
-lab1-up: dvc
-	@echo '[lab1] Lab-01 is ready'
+api: database api-image
+	@echo '[api] Creating database credentials'
+	@kubectl --context $(CONTEXT) \
+		-n supportops-platform \
+		create secret generic supportops-api-database \
+		--from-literal=password="$$(cat $(CREDENTIAL_DIR)/postgres-password)" \
+		--dry-run=client -o yaml \
+		| kubectl --context $(CONTEXT) apply -f -
+	@echo '[api] Deploying SupportOps API'
+	@kubectl --context $(CONTEXT) apply \
+		-f platform/apps/supportops-api.yaml
+	@kubectl --context $(CONTEXT) \
+		-n supportops-platform \
+		set image deployment/supportops-api \
+		api=$(SUPPORTOPS_API_IMAGE)
+	@kubectl --context $(CONTEXT) \
+		-n supportops-platform \
+		rollout restart deployment/supportops-api
+	@kubectl --context $(CONTEXT) \
+		-n supportops-platform \
+		rollout status deployment/supportops-api \
+		--timeout=180s
 
-lab2-up: dvc mlflow
-	@echo '[lab2] MLflow is ready at http://mlflow.supportops.local'
+install: dvc mlflow api verify
+	@echo '[install] Complete platform is ready'
 
-up: lab2-up verify
-	@echo '[up] Complete environment is ready'
+up: install
+	@echo '[up] Alias complete; use make install'
 
-verify-lab0:
-	@echo '[verify] Lab-00 foundation and ingress'
+verify-foundation:
+	@echo '[verify] Foundation and ingress'
 	@kubectl --context $(CONTEXT) \
 		-n ingress-nginx \
 		rollout status deployment/ingress-nginx-controller \
@@ -303,8 +314,8 @@ verify-lab0:
 		--timeout=180s
 	@test "$$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --resolve platform.supportops.local:80:127.0.0.1 http://platform.supportops.local/healthz)" = 200
 
-verify-lab1:
-	@echo '[verify] Lab-01 database, object storage, and DVC'
+verify-data:
+	@echo '[verify] PostgreSQL, SeaweedFS, and DVC'
 	@kubectl --context $(CONTEXT) \
 		-n supportops-data \
 		rollout status statefulset/postgresql \
@@ -314,12 +325,14 @@ verify-lab1:
 		rollout status statefulset/seaweedfs \
 		--timeout=240s
 	@test "$$(kubectl --context $(CONTEXT) -n supportops-data exec postgresql-0 -- psql -U supportops -d supportops -Atc 'SELECT COUNT(*) FROM helpdesk.tickets;')" = 250
-	@.venv/bin/python -c 'import boto3, pathlib; p=pathlib.Path(".local/lab-01"); s3=boto3.client("s3", endpoint_url="http://s3.supportops.local", aws_access_key_id=(p/"s3-access-key").read_text().strip(), aws_secret_access_key=(p/"s3-secret-key").read_text().strip()); names={item["Name"] for item in s3.list_buckets().get("Buckets", [])}; assert "supportops-dvc" in names, "missing bucket: supportops-dvc"'
+	@test "$$(kubectl --context $(CONTEXT) -n supportops-data exec postgresql-0 -- psql -U supportops -d supportops -Atc 'SELECT COUNT(*) FROM helpdesk.schema_migrations;')" = 2
+	@test "$$(kubectl --context $(CONTEXT) -n supportops-data exec postgresql-0 -- psql -U supportops -d supportops -Atc "SELECT row_count FROM helpdesk.dataset_releases WHERE release_name = 'sample';")" = 250
+	@.venv/bin/python -c 'import boto3, pathlib; p=pathlib.Path("$(CREDENTIAL_DIR)"); s3=boto3.client("s3", endpoint_url="http://s3.supportops.local", aws_access_key_id=(p/"s3-access-key").read_text().strip(), aws_secret_access_key=(p/"s3-secret-key").read_text().strip()); names={item["Name"] for item in s3.list_buckets().get("Buckets", [])}; assert "supportops-dvc" in names, "missing bucket: supportops-dvc"'
 	@.venv/bin/dvc status --quiet --cloud \
 		datasets/releases/sample/tickets.csv.dvc
 
-verify-lab2:
-	@echo '[verify] Lab-02 MLflow lifecycle service'
+verify-mlflow:
+	@echo '[verify] MLflow lifecycle service'
 	@kubectl --context $(CONTEXT) \
 		-n supportops-ml \
 		rollout status deployment/mlflow \
@@ -329,11 +342,47 @@ verify-lab2:
 		-n supportops-ml \
 		exec deployment/mlflow -- python -c 'import boto3; s3=boto3.client("s3", endpoint_url="http://seaweedfs.supportops-data.svc.cluster.local:8333"); s3.head_bucket(Bucket="supportops-models")'
 
-verify: verify-lab0 verify-lab1 verify-lab2
+verify-api:
+	@echo '[verify] SupportOps API'
+	@kubectl --context $(CONTEXT) \
+		-n supportops-platform \
+		rollout status deployment/supportops-api \
+		--timeout=180s
+	@test "$$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --resolve api.supportops.local:80:127.0.0.1 http://api.supportops.local/healthz)" = 200
+	@test "$$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --resolve api.supportops.local:80:127.0.0.1 http://api.supportops.local/readyz)" = 200
+	@test "$$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --resolve api.supportops.local:80:127.0.0.1 http://api.supportops.local/api/v1/tickets?limit=1)" = 200
+	@test "$$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --resolve api.supportops.local:80:127.0.0.1 http://api.supportops.local/api/v1/summary)" = 200
+
+verify: verify-foundation verify-data verify-mlflow verify-api
 	@echo '[verify] All platform checks passed'
 
-restore: baseline data mlflow
-	@echo '[restore] Environment restored'
+validate:
+	@python3 scripts/validate_repository.py
+
+test-foundation:
+	@python3 -m unittest discover -s tests -v
+
+test-api:
+	@python3 -m pytest services/supportops-api/tests -q
+
+lint-api:
+	@cd services/supportops-api && python3 -m ruff check src tests
+	@cd services/supportops-api && python3 -m mypy src
+
+test: validate test-foundation test-api lint-api
+	@echo '[test] All repository checks passed'
+
+demo-foundation:
+	@bash scripts/demo_foundation.sh
+
+demo-api-local:
+	@bash scripts/demo_api_local.sh
+
+demo-api-kubernetes: api
+	@KUBE_CONTEXT=$(CONTEXT) bash scripts/demo_api_kubernetes.sh
+
+restore: dvc mlflow api verify
+	@echo '[restore] Platform restored'
 
 status:
 	@kubectl --context $(CONTEXT) get nodes -o wide
@@ -351,18 +400,21 @@ status:
 	@docker network ls
 
 down:
-	@echo '[down] Deleting Kind cluster only'
+	@echo '[down] Removing Kind cluster only'
 	@kind delete cluster --name $(CLUSTER) 2>/dev/null || true
 
 clean:
-	@echo '[clean] Deleting Kind cluster'
+	@echo '[clean] Removing Kind cluster'
 	@kind delete cluster --name $(CLUSTER) 2>/dev/null || true
-	@echo '[clean] Deleting registry'
+	@echo '[clean] Removing local registry'
 	@docker rm -f $(REGISTRY) 2>/dev/null || true
 	@docker volume rm $(REGISTRY_VOLUME) 2>/dev/null || true
-	@echo '[clean] Deleting Docker Kind network'
+	@echo '[clean] Removing Docker Kind network'
 	@docker network rm kind 2>/dev/null || true
+
+uninstall: clean
+	@echo '[uninstall] Platform runtime removed'
 
 reset:
 	@$(MAKE) clean
-	@$(MAKE) up
+	@$(MAKE) install

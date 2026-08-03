@@ -6,7 +6,8 @@ $HostsPath = Join-Path $env:SystemRoot "System32\drivers\etc\hosts"
 $Hostnames = @(
     "platform.supportops.local",
     "s3.supportops.local",
-    "mlflow.supportops.local"
+    "mlflow.supportops.local",
+    "api.supportops.local"
 )
 
 $Lines = @(Get-Content -LiteralPath $HostsPath)
