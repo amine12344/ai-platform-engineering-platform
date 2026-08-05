@@ -33,6 +33,10 @@ REQUIRED_FILES = (
     "platform/apps/supportops-api.yaml",
     "scripts/migrate_database.sh",
     "scripts/import_dataset.sh",
+    "train.py",
+    "lifecycle.py",
+    "tests/ml/test_train.py",
+    "tests/ml/test_lifecycle.py",
 )
 
 VERSION_KEYS = (
@@ -125,6 +129,11 @@ def main() -> None:
     ):
         if f"name: {namespace}" not in namespaces:
             fail(f"namespace manifest is missing {namespace}")
+
+    root_pyproject = read("pyproject.toml")
+    for module in ("train", "lifecycle"):
+        if f'"{module}"' not in root_pyproject:
+            fail(f"pyproject.toml does not package {module}")
 
     print(
         "PASS  repository contract is complete; "

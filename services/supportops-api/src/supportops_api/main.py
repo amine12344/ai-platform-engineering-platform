@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,24 +12,48 @@ from . import __version__
 from .models import HealthResponse, ReadinessResponse, Ticket, TicketList, TicketSummary
 from .repository import PostgresTicketRepository, TicketRepository
 from .settings import Settings, get_settings
+from .model_client import (
+    CategoryModelClient,
+    HttpCategoryModelClient,
+    ModelServiceUnavailableError,
+)
+from .models import (
+    CategoryPredictionRequest,
+    CategoryPredictionResponse,
+    HealthResponse,
+    ReadinessResponse,
+    Ticket,
+    TicketList,
+    TicketSummary,
+)
 
 LOGGER = logging.getLogger("supportops_api")
 
 
-def get_repository(request: Request) -> TicketRepository:
+async def get_repository(request: Request) -> TicketRepository:
     repository = getattr(request.app.state, "repository", None)
     if repository is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Ticket repository is unavailable",
         )
-    return repository
+    return cast(TicketRepository, repository)
 
+
+def get_model_client(request: Request) -> CategoryModelClient:
+    client = getattr(request.app.state, "model_client", None)
+    if client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model service client is unavailable",
+        )
+    return client
 
 def create_app(
     *,
     settings: Settings | None = None,
     repository: TicketRepository | None = None,
+    model_client: CategoryModelClient | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
 
@@ -44,6 +68,14 @@ def create_app(
                 max_size=resolved_settings.database_pool_max_size,
             )
             app.state.repository = created_repository
+            if model_client is None:
+                created_model_client = HttpCategoryModelClient(
+                    resolved_settings.model_service_url,
+                    resolved_settings.model_service_timeout_seconds,
+                )
+                app.state.model_client = created_model_client
+            else:
+                app.state.model_client = model_client
         else:
             app.state.repository = repository
         LOGGER.info("service_started environment=%s", resolved_settings.environment)
@@ -53,6 +85,9 @@ def create_app(
             if created_repository is not None:
                 created_repository.close()
             LOGGER.info("service_stopped")
+            if created_model_client is not None:
+                created_model_client.close()
+            LOGGER.info("model_client_stopped")
 
     app = FastAPI(
         title="SupportOps API",
@@ -69,7 +104,7 @@ def create_app(
     )
 
     @app.get("/healthz", response_model=HealthResponse, tags=["operations"])
-    def health() -> HealthResponse:
+    async def health() -> HealthResponse:
         return HealthResponse(
             status="ok",
             service=resolved_settings.service_name,
@@ -77,7 +112,7 @@ def create_app(
         )
 
     @app.get("/readyz", response_model=ReadinessResponse, tags=["operations"])
-    def readiness(
+    async def readiness(
         repo: Annotated[TicketRepository, Depends(get_repository)],
     ) -> ReadinessResponse:
         try:
@@ -91,7 +126,7 @@ def create_app(
         return ReadinessResponse(status="ready", database="reachable")
 
     @app.get("/api/v1/tickets", response_model=TicketList, tags=["tickets"])
-    def list_tickets(
+    async def list_tickets(
         repo: Annotated[TicketRepository, Depends(get_repository)],
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
         offset: Annotated[int, Query(ge=0)] = 0,
@@ -113,7 +148,7 @@ def create_app(
         return TicketList(items=items, total=total, limit=limit, offset=offset)
 
     @app.get("/api/v1/tickets/{ticket_id}", response_model=Ticket, tags=["tickets"])
-    def get_ticket(
+    async def get_ticket(
         ticket_id: str,
         repo: Annotated[TicketRepository, Depends(get_repository)],
     ) -> Ticket:
@@ -123,10 +158,33 @@ def create_app(
         return ticket
 
     @app.get("/api/v1/summary", response_model=TicketSummary, tags=["analytics"])
-    def summary(
+    async def summary(
         repo: Annotated[TicketRepository, Depends(get_repository)],
     ) -> TicketSummary:
         return repo.summary()
+
+    @app.post(
+    "/api/v1/predictions/category",
+    response_model=CategoryPredictionResponse,
+    tags=["predictions"],
+)
+def predict_category(
+    payload: CategoryPredictionRequest,
+    client: Annotated[CategoryModelClient, Depends(get_model_client)],
+) -> CategoryPredictionResponse:
+    try:
+        return client.predict(payload)
+    except ModelServiceUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        LOGGER.exception("category_prediction_failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Model service returned an invalid response",
+        ) from exc
 
     return app
 

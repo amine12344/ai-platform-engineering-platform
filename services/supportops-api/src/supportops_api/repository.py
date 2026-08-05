@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from .models import Ticket, TicketSummary
 
@@ -107,9 +107,11 @@ class PostgresTicketRepository:
         with self._pool.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(count_sql, parameters)
-                total = int(cursor.fetchone()["total"])
+                count_row = cast(Mapping[str, Any], cursor.fetchone())
+                total = int(count_row["total"])
                 cursor.execute(data_sql, [*parameters, limit, offset])
-                tickets = [self._ticket(row) for row in cursor.fetchall()]
+                rows = cast(list[Mapping[str, Any]], cursor.fetchall())
+                tickets = [self._ticket(row) for row in rows]
         return tickets, total
 
     def get_ticket(self, ticket_id: str) -> Ticket | None:
@@ -119,7 +121,7 @@ class PostgresTicketRepository:
                     "SELECT * FROM helpdesk.tickets WHERE ticket_id = %s",
                     (ticket_id,),
                 )
-                row = cursor.fetchone()
+                row = cast(Mapping[str, Any] | None, cursor.fetchone())
         return self._ticket(row) if row else None
 
     def summary(self) -> TicketSummary:
@@ -135,7 +137,7 @@ class PostgresTicketRepository:
                     FROM helpdesk.tickets
                     """
                 )
-                totals = cursor.fetchone()
+                totals = cast(Mapping[str, Any], cursor.fetchone())
                 cursor.execute(
                     """
                     SELECT priority, COUNT(*) AS count
@@ -144,7 +146,10 @@ class PostgresTicketRepository:
                     ORDER BY priority
                     """
                 )
-                by_priority = {row["priority"]: int(row["count"]) for row in cursor.fetchall()}
+                priority_rows = cast(list[Mapping[str, Any]], cursor.fetchall())
+                by_priority = {
+                    row["priority"]: int(row["count"]) for row in priority_rows
+                }
                 cursor.execute(
                     """
                     SELECT category, COUNT(*) AS count
@@ -153,7 +158,10 @@ class PostgresTicketRepository:
                     ORDER BY category
                     """
                 )
-                by_category = {row["category"]: int(row["count"]) for row in cursor.fetchall()}
+                category_rows = cast(list[Mapping[str, Any]], cursor.fetchall())
+                by_category = {
+                    row["category"]: int(row["count"]) for row in category_rows
+                }
 
         return TicketSummary(
             total=int(totals["total"]),

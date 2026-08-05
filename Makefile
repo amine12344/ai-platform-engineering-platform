@@ -39,6 +39,11 @@ help:
 		'make mlflow     Build and deploy MLflow' \
 		'make api        Build and deploy the SupportOps API' \
 		'' \
+		'make train      Train and register the SupportOps classifier' \
+		'make promote-model Evaluate and alias a qualified model' \
+		'make test-ml    Run ML lifecycle unit tests' \
+		'make demo-mlflow-lifecycle Run training and promotion end to end' \
+		'' \
 		'Development targets:' \
 		'make validate   Validate the repository contract' \
 		'make test       Run foundation and API tests plus API linting' \
@@ -363,13 +368,14 @@ test-foundation:
 	@python3 -m unittest discover -s tests -v
 
 test-api:
-	@python3 -m pytest services/supportops-api/tests -q
+	@PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+		python3 -m pytest services/supportops-api/tests -q
 
 lint-api:
 	@cd services/supportops-api && python3 -m ruff check src tests
 	@cd services/supportops-api && python3 -m mypy src
 
-test: validate test-foundation test-api lint-api
+test: validate test-foundation test-api test-ml lint-api
 	@echo '[test] All repository checks passed'
 
 demo-foundation:
@@ -383,6 +389,33 @@ demo-api-kubernetes: api
 
 restore: dvc mlflow api verify
 	@echo '[restore] Platform restored'
+
+.PHONY: test-ml train promote-model demo-mlflow-lifecycle
+
+test-ml:
+	@python3 -m unittest discover -s tests/ml -v
+
+train:
+	@echo '[train] Training and registering priority classifier'
+	@MLFLOW_TRACKING_URI=$(MLFLOW_TRACKING_URI) \
+		python3 train.py \
+		--dataset datasets/releases/sample/tickets.csv \
+		--experiment supportops-ticket-priority \
+		--registered-model $(MODEL_NAME)
+
+promote-model:
+	@echo '[lifecycle] Evaluating latest model for promotion'
+	@MLFLOW_TRACKING_URI=$(MLFLOW_TRACKING_URI) \
+		python3 lifecycle.py \
+		--model $(MODEL_NAME) \
+		--alias $(MODEL_ALIAS) \
+		--metric macro_f1 \
+		--threshold $(MODEL_QUALITY_THRESHOLD)
+
+demo-mlflow-lifecycle: mlflow dataset train promote-model
+	@echo '[demo] MLflow training lifecycle completed'
+	@cat .local/training/result.json
+	@cat .local/training/promotion.json
 
 status:
 	@kubectl --context $(CONTEXT) get nodes -o wide

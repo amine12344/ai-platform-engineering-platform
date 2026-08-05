@@ -16,6 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Install root ML dependencies
+        run: python -m pip install -e .
       - name: Install API development dependencies
         run: python -m pip install -r services/supportops-api/requirements-dev.txt
       - name: Validate repository
@@ -24,7 +26,15 @@ jobs:
         run: make test-foundation
       - name: Run API tests
         run: make test-api
+      - name: Run ML lifecycle tests
+        run: make test-ml
       - name: Lint API
         run: make lint-api
       - name: Compile Python
-        run: python -m compileall datasets scripts services/supportops-api/src
+        run: >-
+          python -m compileall
+          datasets
+          scripts
+          services/supportops-api/src
+          train.py
+          lifecycle.py

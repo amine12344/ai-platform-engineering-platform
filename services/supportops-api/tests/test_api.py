@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+import httpx
+from fastapi import FastAPI
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SERVICE_ROOT / "src"))
@@ -58,20 +60,33 @@ class FakeRepository:
         )
 
 
-def client_and_repo() -> tuple[TestClient, FakeRepository]:
+def app_and_repo() -> tuple[FastAPI, FakeRepository]:
     repository = FakeRepository()
     app = create_app(
         settings=Settings(database_password="test"),
         repository=repository,
     )
-    return TestClient(app), repository
+    app.state.repository = repository
+    return app, repository
+
+
+async def get_many(app: FastAPI, *paths: str) -> list[httpx.Response]:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as client:
+        return [await client.get(path) for path in paths]
+
+
+async def get(app: FastAPI, path: str) -> httpx.Response:
+    return (await get_many(app, path))[0]
 
 
 def test_health_and_readiness() -> None:
-    client, _ = client_and_repo()
-    with client:
-        health = client.get("/healthz")
-        readiness = client.get("/readyz")
+    app, _ = app_and_repo()
+
+    health, readiness = asyncio.run(get_many(app, "/healthz", "/readyz"))
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
     assert readiness.status_code == 200
@@ -79,20 +94,24 @@ def test_health_and_readiness() -> None:
 
 
 def test_readiness_failure_returns_503() -> None:
-    client, repository = client_and_repo()
+    app, repository = app_and_repo()
     repository.fail_ping = True
-    with client:
-        response = client.get("/readyz")
+    response = asyncio.run(get(app, "/readyz"))
     assert response.status_code == 503
     assert response.json()["detail"] == "Database is not reachable"
 
 
 def test_list_filter_detail_and_summary() -> None:
-    client, _ = client_and_repo()
-    with client:
-        listing = client.get("/api/v1/tickets?priority=P1&limit=10")
-        missing = client.get("/api/v1/tickets/SUP-999999")
-        summary = client.get("/api/v1/summary")
+    app, _ = app_and_repo()
+
+    listing, missing, summary = asyncio.run(
+        get_many(
+            app,
+            "/api/v1/tickets?priority=P1&limit=10",
+            "/api/v1/tickets/SUP-999999",
+            "/api/v1/summary",
+        )
+    )
     assert listing.status_code == 200
     assert listing.json()["total"] == 1
     assert listing.json()["items"][0]["ticket_id"] == "SUP-000001"
@@ -102,7 +121,6 @@ def test_list_filter_detail_and_summary() -> None:
 
 
 def test_invalid_query_is_rejected() -> None:
-    client, _ = client_and_repo()
-    with client:
-        response = client.get("/api/v1/tickets?priority=P9&limit=0")
+    app, _ = app_and_repo()
+    response = asyncio.run(get(app, "/api/v1/tickets?priority=P9&limit=0"))
     assert response.status_code == 422
