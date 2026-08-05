@@ -1,0 +1,133 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: supportops-api
+  namespace: supportops-platform
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: supportops-api-config
+  namespace: supportops-platform
+data:
+  SUPPORTOPS_ENVIRONMENT: kubernetes
+  SUPPORTOPS_LOG_LEVEL: INFO
+  SUPPORTOPS_DATABASE_HOST: postgresql.supportops-data.svc.cluster.local
+  SUPPORTOPS_DATABASE_PORT: "5432"
+  SUPPORTOPS_DATABASE_NAME: supportops
+  SUPPORTOPS_DATABASE_USER: supportops
+  SUPPORTOPS_DATABASE_POOL_MIN_SIZE: "1"
+  SUPPORTOPS_DATABASE_POOL_MAX_SIZE: "5"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supportops-api
+  namespace: supportops-platform
+  labels:
+    app.kubernetes.io/name: supportops-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: supportops-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: supportops-api
+        supportops.io/component: application-api
+    spec:
+      serviceAccountName: supportops-api
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: localhost:5001/supportops/supportops-api:0.3.0
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: supportops-api-config
+          env:
+            - name: SUPPORTOPS_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: supportops-api-database
+                  key: password
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+      terminationGracePeriodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: supportops-api
+  namespace: supportops-platform
+spec:
+  selector:
+    app.kubernetes.io/name: supportops-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: supportops-api
+  namespace: supportops-platform
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.supportops.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: supportops-api
+                port:
+                  name: http

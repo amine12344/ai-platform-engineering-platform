@@ -2,9 +2,5 @@
 # the performance. Learn more at
 # https://dvc.org/doc/user-guide/dvcignore
 
-# Ignore local lab artifacts and generated dataset outputs
+# Ignore non-DVC local state; DVC manages its own cache and temporary database
 .local/
-.dvc/cache/
-.dvc/tmp/
-.dvc/config.local
-datasets/releases/sample/tickets.csv

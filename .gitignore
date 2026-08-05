@@ -5,14 +5,25 @@
 *.tmp
 *~
 
-# Ignore Python caches if any
+# Python bytecode, environments, packaging, and test output
 __pycache__/
 *.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Ignore local environment files
 *.env
+!platform/versions.env
 *.local
-.venv/
 
 # Ignore OS generated files
 Thumbs.db
@@ -22,12 +33,14 @@ Thumbs.db
 *.kubeconfig
 *.kubeconfig.*
 
-# Ignore generated evidence files that may be recorded during labs/tests
-evidence/**/*.txt
+# Generated evidence; allow placeholders that preserve the directory layout
+evidence/**
+!evidence/**/.gitkeep
 
 # Ignore binary or package output
 *.log
 *.cache
+.cache/
 
 # Ignore vscode workspace settings
 .vscode/
@@ -41,6 +54,4 @@ docker-compose.override.yml
 
 # Ignore local lab and generated data artifacts
 .local/
-*.local
 datasets/releases/sample/tickets.csv
-*.tmp

@@ -66,6 +66,13 @@ spec:
               containerPort: 8888
             - name: s3
               containerPort: 8333
+          startupProbe:
+            httpGet:
+              path: /cluster/status
+              port: master
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 24
           readinessProbe:
             httpGet:
               path: /
