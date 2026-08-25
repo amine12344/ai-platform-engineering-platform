@@ -46,3 +46,4 @@ The current branch now includes the following lab progress:
 
 - Keep local environment files out of source control by using `.gitignore`.
 - Use the `evidence/` folder to store output from verification commands and lab checks.
+- This repository should stay in develepment mode and only for exploration.
